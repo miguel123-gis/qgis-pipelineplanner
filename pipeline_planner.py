@@ -21,9 +21,12 @@
  *                                                                         *
  ***************************************************************************/
 """
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
+from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction
+from qgis.PyQt.QtWidgets import QAction, QMessageBox, QTableWidgetItem
+
+from qgis.gui import QgsMapToolEmitPoint, QgsRubberBand
+from qgis.core import QgsProject
 
 # Initialize Qt resources from file resources.py
 from .resources import *
@@ -45,9 +48,14 @@ class PipelinePlanner:
         """
         # Save reference to the QGIS interface
         self.iface = iface
+        self.canvas = self.iface.mapCanvas()
         # initialize plugin directory
         self.plugin_dir = os.path.dirname(__file__)
         # initialize locale
+        self.addPipelinePoint = QgsMapToolEmitPoint(self.canvas)
+        self.rbPipeline = QgsRubberBand(self.canvas)
+        self.rbPipeline.setColor(Qt.red)
+        self.rbPipeline.setWidth(4)
         locale = QSettings().value('locale/userLocale')[0:2]
         locale_path = os.path.join(
             self.plugin_dir,
@@ -66,6 +74,10 @@ class PipelinePlanner:
         # Check if plugin was started the first time in current QGIS session
         # Must be set in initGui() to survive plugin reloads
         self.first_start = None
+        self.dlg = PipelinePlannerDialog()
+        self.dlg.tblImpacts.setColumnWidth(1, 75)
+        self.dlg.tblImpacts.setColumnWidth(2, 250)
+        self.dlg.tblImpacts.setColumnWidth(3, 75)
 
     # noinspection PyMethodMayBeStatic
     def tr(self, message):
@@ -169,7 +181,7 @@ class PipelinePlanner:
 
         # will be set False in run()
         self.first_start = True
-
+        self.addPipelinePoint.canvasClicked.connect(self.evaluatePipeline)
 
     def unload(self):
         """Removes the plugin menu item and icon from QGIS GUI."""
@@ -182,19 +194,63 @@ class PipelinePlanner:
 
     def run(self):
         """Run method that performs all the real work"""
+        self.canvas.setMapTool(self.addPipelinePoint)
 
-        # Create the dialog with elements (after translation) and keep reference
-        # Only create GUI ONCE in callback, so that it will only load when the plugin is started
-        if self.first_start == True:
-            self.first_start = False
-            self.dlg = PipelinePlannerDialog()
+    def evaluatePipeline (self, point, button):
+        if button == Qt.LeftButton:
+            self.rbPipeline.addPoint(point)
+            self.rbPipeline.show()
+        elif button == Qt.RightButton:
+            pipeline = self.rbPipeline.asGeometry()
+            self.dlg.tblImpacts.setRowCount(0)
 
-        # show the dialog
-        self.dlg.show()
-        # Run the dialog event loop
-        result = self.dlg.exec_()
-        # See if OK was pressed
-        if result:
-            # Do something useful here - delete the line containing pass and
-            # substitute with your code.
-            pass
+            # Raptor
+            lyrRaptor = QgsProject.instance().mapLayersByName("Raptor Buffer")[0]
+            raptors = lyrRaptor.getFeatures(pipeline.boundingBox())
+            for raptor in raptors:
+                valConstraint = raptor.attribute("recentspec")
+                valID = raptor.attribute("Nest_ID")
+                valStatus = raptor.attribute("recentstat")
+                valDistance = pipeline.distance(raptor.geometry().centroid())
+                if raptor.geometry().intersects(pipeline):
+                    row = self.dlg.tblImpacts.rowCount()
+                    self.dlg.tblImpacts.insertRow(row)
+                    self.dlg.tblImpacts.setItem(row, 0, QTableWidgetItem(valConstraint))
+                    self.dlg.tblImpacts.setItem(row, 1, QTableWidgetItem(str(valID)))
+                    self.dlg.tblImpacts.setItem(row, 2, QTableWidgetItem(valStatus))
+                    self.dlg.tblImpacts.setItem(row, 3, QTableWidgetItem("{:4.5f}".format(valDistance)))
+
+            # BUOWL
+            lyrBUOWL = QgsProject.instance().mapLayersByName("BUOWL Buffer")[0]
+            owls = lyrBUOWL.getFeatures(pipeline.boundingBox())
+            for owl in owls:
+                valConstraint = "BUOWL Habitat"
+                valID = owl.attribute("habitat_id")
+                valStatus = owl.attribute("recentstat")
+                valDistance = pipeline.distance(owl.geometry().buffer(-0.001, 5))
+                if owl.geometry().intersects(pipeline):
+                    row = self.dlg.tblImpacts.rowCount()
+                    self.dlg.tblImpacts.insertRow(row)
+                    self.dlg.tblImpacts.setItem(row, 0, QTableWidgetItem(valConstraint))
+                    self.dlg.tblImpacts.setItem(row, 1, QTableWidgetItem(str(valID)))
+                    self.dlg.tblImpacts.setItem(row, 2, QTableWidgetItem(valStatus))
+                    self.dlg.tblImpacts.setItem(row, 3, QTableWidgetItem("{:4.5f}".format(valDistance)))
+
+            # Eagles
+            lyrEagles = QgsProject.instance().mapLayersByName("BAEA Buffer")[0]
+            eagles = lyrEagles.getFeatures(pipeline.boundingBox())
+            for eagle in eagles:
+                valConstraint = "Bald Eagle Nest"
+                valID = eagle.attribute("nest_id")
+                valStatus = eagle.attribute("status")
+                valDistance = pipeline.distance(eagle.geometry().centroid())
+                if eagle.geometry().intersects(pipeline):
+                    row = self.dlg.tblImpacts.rowCount()
+                    self.dlg.tblImpacts.insertRow(row)
+                    self.dlg.tblImpacts.setItem(row, 0, QTableWidgetItem(str(valConstraint)))
+                    self.dlg.tblImpacts.setItem(row, 1, QTableWidgetItem(str(valID)))
+                    self.dlg.tblImpacts.setItem(row, 2, QTableWidgetItem(valStatus))
+                    self.dlg.tblImpacts.setItem(row, 3, QTableWidgetItem("{:4.5f}".format(valDistance)))
+
+            self.dlg.show()
+            self.rbPipeline.reset()
